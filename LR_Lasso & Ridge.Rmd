@@ -1,0 +1,691 @@
+---
+title: "Pratice: Linear Regression_LASSO & RIDGE"
+author: "namvu"
+date: "19/03/2022"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+Data lấy từ Kaggle có tên Real estate price prediction. Link data: https://www.kaggle.com/quantbruce/real-estate-price-prediction?select=Real+estate.csv
+
+
+Để tiến hành thực hiện đầu tiên cần Tải các thư viện cần thiết để tiến hành phân tích
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(dplyr)
+library(tibble)
+library(psych)
+library(caret)
+library(car)
+library(ggplot2)
+library(ggfortify)
+library(correlation)
+library(kableExtra)
+library(BayesFactor)
+library(GGally)
+library(ggpubr)
+library(rsample)
+library(vctrs)
+library(glmnet)
+library(relaimpo)
+library(ggrepel)
+library(corrplot)
+library(leaflet)
+library(leaflet.providers)
+library(recipes)
+```
+
+
+## A. Khảo sát và thăm dò dữ liệu 
+
+Đọc dữ liệu vào R 
+
+```{r}
+df <- read.csv("C:/Users/KH/Google Drive/Data Sample/Real estate.csv")
+head(df)
+
+dim(df)
+
+```
+Xem nào, orginal dataset chứa 414 explanatory variables giải thích 7 khía cạnh của bất động sản: 
+
+- X1 transaction date (numeric)
+- X2 house age (numeric, in year)
+- X3 distance to the nearest MRT station (numeric)
+- X4 number of convenience stores (numeric)
+- X5 latitude (numeric)
+- X6 longitude (numeric)
+- X7 house price of unit area (numeric)
+
+Trong bài thực hành này chúng ta sẽ đi tìm một mô hình giá bán bất động sản với các biến độc lập có sẵn, sẽ được dùng để hiểu giá thay đổi chính xác như thế nào với các biến độc lập, việc này có ý nghĩa gì ? 
+
+- Quản lý chiến lược kinh doanh về giá 
+- Các nhân tố chính tạo động lực để định giá ở một thị trường mới 
+
+Research Question ? 
+
+- Những biến nào có ý nghĩa trong việc dự đoán giá bất động sản ?
+- Trong các biến đó biến nào tốt nhất để mô tả về giá bán ? 
+
+Visualization các bất động sản trên bản đồ thông qua hai biến X5 và X6 để xác định vị trí và đơn giá bán từng bất động sản
+
+```{r}
+df <- df %>% mutate(popup_info = paste("No:", No, '<br/>', 'Unit Price: ', 
+                                       Y.house.price.of.unit.area))
+df
+
+leaflet(data = df) %>%
+  addProviderTiles(providers$Stamen.Terrain) %>% 
+  addCircles(lng = ~X6.longitude, 
+             lat = ~X5.latitude, 
+             weight = 10, 
+             opacity = 0.5, 
+             radius = ~5,
+             popup = ~popup_info, 
+             color = "orange")
+```
+
+
+```{r}
+colSums(is.na(df))
+```
+
+Oh! Dữ liệu Không có NA values là điều rất hiếm gặp trong thực tế 
+
+
+Bỏ cột No, X1.transaction.date, popup_info vừa khởi tạo vì không cần thiết, xác định biến outcome trong trường hợp này cần tiên lượng chính là đơn giá của BĐS đang chào bán (biến Y.house.price.of.unit.area)
+
+```{r}
+df <- df[-c(1:2,9)]
+
+head(df)
+```
+Để làm gọn tên các biến số mình dùng hàm rename trong package 'dplyr', quy ước chung: 
+
+- X1: đã loại bỏ do không cần thiết trong trường hợp này
+- X2: House Age
+- X3: Distance to the nearest MRT Station
+- X4: Number of Convenience Stores 
+- X5: Latitude 
+- X6: Longitude
+- Y: House Price of Unit Area 
+
+```{r}
+df <- rename(df,
+             X2 = X2.house.age, 
+             X3 = X3.distance.to.the.nearest.MRT.station, 
+             X4 = X4.number.of.convenience.stores,
+             X5 = X5.latitude,
+             X6 = X6.longitude,
+             Y = Y.house.price.of.unit.area)
+
+head(df)
+
+dim(df)
+```
+
+Tiến hành thống kê mô tả dữ liệu khảo sát phân bố như thế nào nhé. R giúp chúng ta tính các chỉ số thống kê mô tả, đưa ra các chỉ số thống kê mô tả cơ bản, hàm describe() cung cấp khá đầy đủ, trong đó có 2 chỉ số để đánh giá độ lệch và độ nhọn của phân bố như: skew và kurtosis, chỉ số trung bình, độ lệch chuẩn: mean, sd, median ...và dưới đây là kết quả:
+
+
+```{r}
+describe(df) %>%
+  kable() %>% 
+  kable_classic(full_width = T, 
+                html_font = "Cambria")
+```
+
+Visualization các biến quan sát
+
+
+
+Tiến hành khảo sát hệ số tương quan của các biến X so với Y, lưu ý hệ số tương quan không nói lên mối liên hệ nhân quả giữa các biến số. 
+
+Dùng corrplot() 
+
+
+```{r}
+library(corrplot)
+
+corrplot.mixed(cor(df),
+               lower = "number", 
+               upper = "circle",
+               tl.col = "black")
+```
+
+Hoặc có thể sử dụng ggpairs() trong thư viện GGally, thực hiện visualization ma trận tương quan các biến quan sát, trong đó các hệ số tương quan được tính bằng hệ số tương quan Pearson
+
+```{r}
+ggpairs(df)
+```
+
+Ngoài ra có thể sử dụng thư viện correlation để thực hiện, nó cung cấp thêm cho chúng ta chỉ số p-value và khoảng tin cậy 95% (95% CI)
+
+```{r}
+df %>% correlation() -> out_corr #Sử dụng hệ số tương quan Pearson 
+
+out_corr
+```
+
+Điểm hay của thư viện correlation có thể tùy biến method và p_adjust, trường hợp này mình hiệu chỉnh p-value theo phương pháp Bonferroni: 
+
+```{r}
+df %>% correlation(ci = 0.975, #Khoảng tin cậy 97.5% 
+                   method="spearman", 
+                   p_adjust = "bonferroni") -> out_corr #Sử dụng hệ số tương quan phi tham số Spearman với chỉ số p adjust theo PP Bonferroni  
+out_corr
+```
+```{r}
+df %>% correlation(ci = 0.975, 
+                   method="pearson", # Hệ số tương quan Pearson
+                   bayesian = TRUE, 
+                   iterations = 1000) -> out_corr_bayes # Sử dụng phương pháp Bayes 
+out_corr_bayes
+```
+
+Kiểm tra các giá trị ngoại vi (outlier) hoặc giá trị có ảnh hưởng đến tham số của mô hình ? 
+
+```{r}
+
+t_1 <- outlierTest(lm(Y ~ X3, data=df))
+
+outlier_test_plot_1 <- ggplot(df, aes(X3, Y)) + 
+  geom_boxplot(outlier.colour = "orange") + 
+  geom_jitter(positiion = position_jitter(width = 0.5, height = 0.5), alpha = 1/4) + 
+  geom_text_repel(aes(label = ifelse(rownames(df) == names(t_1$rstudent), rownames(df)," ")), color ="orange")
+
+suppressMessages(print(outlier_test_plot_1))
+```
+
+```{r}
+t_2 <- outlierTest(lm(Y ~ X4, data=df))
+
+outlier_test_plot_2 <- ggplot(df, aes(X4, Y)) + 
+  geom_boxplot(outlier.colour = "orange") + 
+  geom_jitter(positiion = position_jitter(width = 0.5, height = 0.5), alpha = 1/4) + 
+  geom_text_repel(aes(label = ifelse(rownames(df) == names(t_2$rstudent), rownames(df)," ")), color ="orange")
+
+suppressMessages(print(outlier_test_plot_2))
+```
+
+Kiểm tra lại bằng phương pháp Rosner's Test: 
+
+```{r}
+library(EnvStats)
+
+rosnerTest(df$Y, k = 3)$all.stats 
+```
+
+
+Mình sẽ tạm thời không loại bỏ giá trị đang được tạm gọi là outlier nói trên
+
+
+## B. Một chút với ... "Recipes"
+
+
+Đầu tiên mình sẽ chia dữ liệu thành 2 tập trainset (312 obs) và testset (102 obs). 
+
+```{r}
+
+set.seed(123)
+
+idx = caret::createDataPartition(y=df$Y, p = .75, list = FALSE) #Tách dữ liệu training data chiếm 75% dữ liệu
+
+trainset = df[idx,]
+testset = df[-idx,]
+
+trainset %>% head() 
+```
+
+Định vai trò từng biến 
+
+```{r}
+rec <- recipe(trainset)
+summary(rec)
+
+rec <- rec %>% 
+  update_role(Y, new_role = "outcome") %>%
+  update_role(X2, X3, X4, X5, X6, new_role = "predictor")
+summary(rec)
+```
+
+```{r}
+rec$template %>% 
+  head() %>% 
+  knitr::kable()
+
+rec$steps
+```
+
+Kết hợp quy trình logarithm sẽ chuẩn hóa toàn bộ predictor trong công thức 
+
+```{r}
+
+rec %>%
+  step_log(all_numeric_predictors())
+rec
+```
+
+Thực hiện công thức cho testset, ta được bộ dữ liệu đã được chuẩn hóa 
+
+```{r}
+std_func <- prep(rec, training = trainset, retain = T)
+
+std_test <- bake(std_func, new_data = testset)
+std_train <- bake(std_func, new_data = trainset)
+
+```
+
+
+## C. Modelling 
+
+Ta sẽ Dựng mô hình Multiple Linear Regression cổ điển với outcome là biến Y và biến predictor là các biến X2, X3, X4, X5, X6 trên tập dữ liệu std_train 
+
+
+
+```{r}
+model_1 = lm(Y ~ X2 + X3 + X4 + X5 + X6, data = std_train)
+summary(model_1)
+```
+
+Tính chỉ số variance inflation factor - VIF để phát hiện hiên tượng đa cộng tuyến
+```{r}
+vif(model_1)
+```
+
+```{r}
+autoplot(model_1)
+```
+
+
+Bootstrap validation approach, sử dụng phương pháp tái chọn mẫu Bootstrap 
+
+```{r}
+model_2 = train(form = Y ~ X2 + X3 + X4 + X5, 
+                    data = std_train, 
+                    method = "lm",
+                    trControl = trainControl(method = "boot"), 
+                    number = 200)
+model_2
+```
+
+
+```{r}
+summary(model_2)
+```
+
+
+Một cách khác ta sử dụng phương pháp Ridge hoặc phương pháp LASSO vì trong mô hình nhiều biến tiên lượng là mô hình phức tạp ngoài bias, phương sai của ước số mô hình có xu hướng tăng. 
+
+- Sử dụng ridge regression (L2 Penalty) tìm ước số mô hình sao cho tổng bình phương phần dư thấp nhất (least squares) và cộng thêm hằng số $ \lambda ||b||^2$ trong đó $\lambda$ là 'regularization penalty' 
+
+$ L(b) = ||y - Xb||^2 + \lambda ||b||^2 $ 
+
+
+```{r}
+x_vars = model.matrix(Y ~ X2 + X3 + X4 + X5 + X6, data = std_train)
+y_vars = std_train$Y
+
+ridge_L2 = cv.glmnet(x_vars, y_vars, alpha = 0)
+
+plot(ridge_L2)
+```
+
+
+Hệ số của các biến 
+```{r}
+coef(ridge_L2)
+```
+
+- sử dụng LASSO (L1 Penalty) khác với 'phạt' cho tổng bình phương ước số $b_j$ như Rigde Regression, LASSO sẽ 'phạt' tổng giá trị tuyệt đối của $b_j$
+
+```{r}
+lasso_L1 = cv.glmnet(x_vars, y_vars, alpha = 1)
+
+plot(lasso_L1)
+```
+
+```{r}
+coef(lasso_L1)
+```
+
+
+Dùng phương pháp BMA
+
+```{r}
+library(BMA)
+
+bma = bicreg(x_vars, y_vars, strict = FALSE, OR=30)
+
+summary(bma)
+```
+
+```{r}
+imageplot.bma(bma)
+```
+
+
+## D. Kiểm định mô hình 
+
+Tạo ra biến tiên lượng dựa trên giá trị thật (Y) của mô hình, tính phần dư của mô hình (residuals)
+```{r}
+std_test$predicted = predict(model_2, std_test)
+
+std_test$truth = std_test$Y
+
+std_test$error = std_test$Y - std_test$predicted
+
+std_test %>% head()
+```
+
+
+So sánh mật độ phân bố giữa giá trị thực tế và tiên lượng: 
+
+
+```{r}
+std_test %>% gather(truth, 
+                    predicted, 
+                    key = "Price", 
+                    value = 'Y') %>%
+  ggplot(aes(x = Y, fill = Price)) + 
+  geom_density(alpha = 0.6) + 
+  scale_fill_manual(values = c("gray",
+                               "blue")) + 
+  theme_bw()
+```
+
+
+```{r}
+std_test %>% gather(truth,
+                    predicted,
+                    key = "Y",
+                    value="X4") %>%
+  ggplot(aes(Y, X4, fill = Y, col = Y)) +
+  geom_jitter(alpha = 0.5) + 
+  geom_boxplot(alpha = 0.5) +
+  coord_flip()+
+  stat_compare_means(method = "t.test", 
+                     paired = TRUE, 
+                     label.y = 65) +
+  scale_color_manual(values = c("blue",
+                              "red"))+
+  scale_fill_manual(values = c("blue",
+                             "red"))+
+  theme_bw()
+```
+
+
+Tương quan tuyến tính giữa giá trị thực tế và tiên lượng: 
+
+
+```{r}
+std_test %>% ggplot(aes(truth, 
+                   predicted)) + 
+  geom_jitter(alpha=0.5) + 
+  geom_smooth(alpha=0.2, 
+              method='lm') +
+  stat_cor(method="spearman", 
+           label.x = 15, 
+           label.y = 45) + 
+  scale_color_manual(values=c("blue","red")) + 
+  theme_bw()
+  
+```
+
+
+
+Khảo sát trực tiếp sai biệt giữa thực tế và tiên lượng 
+
+```{r}
+ggplot(std_test, aes(error)) + 
+  geom_histogram(bindwith=20, 
+                 aes(y=..density..), 
+                 col='white', 
+                 fill='gray', 
+                 lwd = 0.8) + 
+  geom_density() + 
+  labs(x = 'Error', y = 'Frequency') +
+  theme_bw()
+```
+
+
+
+Khảo sát khuynh hướng sai biệt của mô hình 
+
+
+```{r}
+std_test %>% mutate(est = if_else(.$error > 0, "Over", "Under")) %>%
+  ggplot(aes(x = truth, 
+             y = error, 
+             col = est)) +
+  geom_jitter(alpha=0.8) +
+  scale_color_manual(values = c("red","blue")) + 
+  geom_hline(yintercept = 0, linetype = 2, col = "black")+
+  theme_bw()
+```
+
+Kiểm tra tính hợp lý của nội dung mô hình, quy luật bên trong mô hình có phù hợp với quan sát thực tế không ? 
+
+```{r}
+std_test %>% gather(truth, 
+                    predicted, 
+                    key="Price", 
+                    value="Y") %>% 
+  ggplot() +
+  geom_jitter(aes(X2, 
+                  Y), 
+              alpha=0.5) +
+  geom_smooth(aes(X2, 
+                  Y, 
+                  col = Price, 
+                  fill = Price),
+              alpha=0.2) +
+  scale_color_manual(values = c("blue", "red")) +
+  scale_fill_manual(values = c("blue", "red")) +
+  ggtitle("Test Set")+
+  theme_bw()
+```
+
+Sử dụng các chỉ số để kiểm tra tính hợp lý của mô hình: 
+
+```{r}
+scoring = function(methods,
+                   truth,
+                   predicted){
+  
+  SSE = function(truth, 
+                 predicted) {
+    sum((predicted - truth)^2)
+  }
+  
+  # MSE
+  
+  MSE = function(truth, 
+                 predicted) {
+    mean((predicted - truth)^2)
+  }
+  
+  # RMSE
+  
+  RMSE = function(truth, 
+                  predicted) {
+    sqrt(MSE(truth, 
+             predicted))
+  }
+  
+  # MEDSE
+  
+  MEDSE = function(truth, 
+                   predicted) {
+    median((predicted - truth)^2)
+  }
+  
+  # SAE
+  
+  SAE = function(truth, 
+                 predicted) {
+    sum(abs(predicted - truth))
+  }
+  
+  # MAE
+  
+  MAE = function(truth, 
+                 predicted) {
+    mean(abs(predicted - truth))
+  }
+  
+  # MEDAE
+  
+  MEDAE = function(truth, 
+                   predicted) {
+    median(abs(predicted - truth))
+  }
+  
+  # RSQ
+  
+  RSQ = function(truth,  
+                 predicted) {
+    rss = SSE(truth,  predicted)
+    ess = sum((truth - mean(truth))^2L)
+    if (ess == 0){
+      warning("Error: all truth values are equal")
+      return(NA_real_)
+    }
+    1 - rss / ess
+  }
+
+  # RRSE Root relative squared error
+  
+  RRSE = function(truth, 
+                  predicted){
+    tss = sum((truth - mean(truth))^2L)
+    if (tss == 0){
+      warning("Error: all truth values are equal.")
+      return(NA_real_)
+    }
+    sqrt(SSE(truth, predicted) / tss)
+  }
+  
+  # RAE : Relative absolute error
+  
+  RAE = function(truth, 
+                 predicted){
+    meanad = sum(abs(truth - mean(truth)))
+    if (meanad == 0){
+      warning("Error:  all truth values are equal.")
+      return(NA_real_)
+    }
+    return(SAE(truth, 
+               predicted) / meanad)
+  }
+  
+  # MAPE Mean absolute percentage error
+  
+  MAPE = function(truth,
+                  predicted){
+    if (any(truth == 0)){
+      warning("Error: truth value is equal to 0.")
+      return(NA_real_)
+    }
+    return(mean(abs((truth - predicted) / truth)))
+  }
+  
+  # Mean squared logarithmic error
+  
+  MSLE = function(truth, 
+                  predicted) {
+    if (any(truth < -1))
+      stop("All truth values must be greater or equal -1")
+    if (any(predicted < -1))
+      stop("All predicted values must be greater or equal -1")
+    
+    mean((log(predicted + 1) - log(truth + 1))^2)
+  }
+  
+  # Root mean squared logarithmic error
+  
+  RMSLE = function(truth, 
+                   predicted) {
+    sqrt(MSLE(truth, predicted))
+  }
+  
+  # Kendall Tau
+  
+  KendallTau = function(truth, 
+                        predicted) {
+    cor(truth, predicted, use = "na.or.complete", method = "kendall")
+  }
+  
+  # rho
+  
+  SpearmanRho = function(truth, 
+                         predicted) {
+    cor(truth, predicted, use = "na.or.complete", method = "spearman")
+  }
+  
+  # Pearson r
+  
+  PearsonR = function(truth,
+                      predicted) {
+    cor(truth, 
+        predicted, 
+        use = "na.or.complete", method = "pearson")
+  }
+  
+  scores = data_frame(Score = methods, Value=rep(NA,
+                                                 length(methods)))
+  
+  for (i in 1:length(methods)){
+    scoring_func = get(methods[i])
+    scores$Value[i]= scoring_func(truth,
+                                  predicted)
+  }
+  
+  return(scores)
+}
+```
+
+```{r}
+scores = scoring(methods=c('MAE',
+                           'MAPE',
+                           'MEDAE',
+                           'MEDSE',
+                           'MSE',
+                           'MSLE',
+                           'RAE',
+                           'RMSE',
+                           'RMSLE',
+                           'RRSE',
+                           'RSQ',
+                           'SAE',
+                           'SSE',
+                           'PearsonR',
+                           'KendallTau',
+                           'SpearmanRho'),
+                 truth = std_test$truth, 
+                 predicted = std_test$predicted)
+
+knitr::kable(scores)
+```
+
+
+
+
+
+
+
+
+
+
+
+
