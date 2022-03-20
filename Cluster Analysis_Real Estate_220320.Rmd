@@ -1,0 +1,230 @@
+---
+title: "Practice: Cluster Analysis"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Trong bài viết này mình chủ yếu thực hành các bước phân tích cụm (cluster analysis) sử dụng thuật toán K-Means và các phương pháp để tìm K 'nhóm' tối ưu, tuy nói K tối ưu nhưng trong thực tế việc tìm K luôn mang ý nghĩa chủ quan, vì vậy việc tìm K luôn được cân nhắc bằng cách chọn thủ công theo ý quyết định của người muốn phân bao nhiêu nhóm. 
+
+Data lấy từ Kaggle có tên Real estate price prediction. Link data: https://www.kaggle.com/quantbruce/real-estate-price-prediction?select=Real+estate.csv
+
+Để tiến hành thực hiện đầu tiên cần Tải các thư viện cần thiết để tiến hành phân tích cụm 
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(dplyr)
+library(factoextra)
+library(NbClust)
+library(cluster) 
+library(skimr)
+library(table1)
+library(explore)
+library(ggplot2)
+library(psych)
+library(broom)
+library(DataExplorer)
+```
+
+## Explorer Data
+ 
+```{r}
+df <- read.csv("C:/Users/KH/Google Drive/Data Sample/Real estate.csv")
+```
+
+Visualization các bất động sản trên bản đồ thông qua hai biến X5 và X6 để xác định vị trí và đơn giá bán từng bất động sản
+
+
+
+```{r}
+skim(df)
+```
+
+Để làm gọn tên các biến số mình dùng hàm rename trong package 'dplyr', quy ước chung: No: Loại bỏ, X1: Transaction Date, X2: House Age, X3: Distance to the nearest MRT Station, X4: Number of Convenience Stores, X5: Latitude, X6: Longitude, Y: House Price of Unit Area 
+
+```{r}
+df <- df[-c(1, 9)] 
+df <- rename(df,
+             X1 = X1.transaction.date,
+             X2 = X2.house.age, 
+             X3 = X3.distance.to.the.nearest.MRT.station, 
+             X4 = X4.number.of.convenience.stores,
+             X5 = X5.latitude,
+             X6 = X6.longitude,
+             Y = Y.house.price.of.unit.area)
+
+head(df)
+```
+
+
+```{r}
+summary(df)
+```
+
+
+```{r}
+geometric.mean(df$Y) #Khảo sát bằng trung bình nhân 
+```
+
+
+Khảo sát phân bố dữ liệu của đơn giá bán
+
+```{r}
+df %>% explore(Y, 
+               color="#333333", 
+               title = "Distribution of House price of unit area", 
+               auto_scale = TRUE)
+```
+
+Khảo sát toàn bộ phân bố dữ liệu của các biến qua histogram
+
+```{r}
+plot_histogram(df)
+```
+
+
+Khảo sát giá bán trung bình của BĐS theo phân nhóm các tiện ích, ở đây trung bình về đơn giá bán có xu hướng tăng theo nhóm tiện ích, càng nhiều tiện ích giá trị cộng hưởng cho giá bán càng tăng cao.
+
+```{r}
+group_mean_X4 <- aggregate(df$Y, 
+                          list(df$X4), 
+                          mean)
+
+colnames(group_mean_X4) <- c("Number of convenience stores", "Mean of Y")
+
+group_mean_X4 %>% 
+  ggplot(aes(x = `Number of convenience stores`, y = `Mean of Y`)) + 
+  geom_line(color="#333333") + 
+  ggtitle("Number of convenience stores via Mean of Y") + 
+  theme_minimal()
+```
+
+
+Biểu đồ dưới đây cho thấy mối quan hệ giữa đơn giá giao dịch và khoảng cách các BĐS giao dịch này xa/ gần MRT station. Khoảng cách càng xa MRT station giá càng có xu hướng thấp hơn. 
+```{r}
+df %>% ggplot(aes(X3, Y)) + 
+  geom_point(color="#333333") + 
+  ggtitle("House price of unit area via distance to the nearest MRT station ") + 
+  theme_minimal()
+```
+
+Khảo sát tương quan giữa các biến 
+```{r}
+plot_correlation(df)
+```
+
+
+## Visualization of distance matrix
+
+Đầu tiên,tính chỉ số Hopkins xem xét về khả năng phân nhóm của dữ liệu, cũng như vẽ ma trận khoảng cách (matrix distance), chỉ số hopskin có giá trị trong khoảng [-1,1], chỉ số càng hướng về 1 biểu thị khả năng tập dữ liệu có khả năng phân nhóm. 
+
+```{r}
+set.seed(123)
+
+df_ct <- get_clust_tendency(df, 
+                            n=50, 
+                            graph=T)
+                        
+df_ct$hopkins
+```
+
+
+```{r}
+print(df_ct$plot)
+```
+
+## Choosing K
+
+Chọn K sử dụng Elbow Method và đối chiếu với Gap Statistic Method: 
+
+```{r}
+#Elbow method
+
+fviz_nbclust(df, 
+             kmeans, # Sử dụng thuật toán K-Means
+             method='wss') + 
+  labs(subtitle = "Elbow method")
+```
+
+```{r}
+#Gap Statistic method
+
+fviz_nbclust(df, 
+             kmeans, 
+             nstart = 35, 
+             method = 'gap_stat', 
+             nboot = 50) + 
+  labs(subtitle = "Gap statistic method")
+```
+
+
+## Implement k-means clustering 
+
+Ta thử tiến hành phân tích cluster qua K-Means Alg với center = 3, tức là chọn k = 3 cụm.
+
+```{r cars}
+df_clust <- kmeans(df, 
+                   centers = 3, 
+                   nstart = 35)
+summary(df_clust)
+
+
+```
+
+```{r}
+fviz_cluster(df_clust, 
+             df, 
+             palette = c("#2E9FDF", "#00AFBB", "#E7B800"), 
+             geom = "point",
+             ellipse.type = "convex",
+             ggtheme = theme_bw())
+```
+
+
+```{r}
+
+tidy(df_clust) #Trích xuất nội dung các tham số trong df_clust thành dataframe, hàm tidy trong package broom 
+```
+
+Khả năng của hàm augment() trong package broom cho phép ta chồng 1 dataframe lên dataframe gốc, từ đó ta có thể tạo các vụ khác 1 cách dễ dàng trên dataframe đã có
+
+```{r}
+augment(df_clust, df) %>%  
+  ggplot(aes(X3, 
+             Y, 
+             color =.cluster)) + 
+  geom_point(alpha = 2) + 
+  ggtitle("Clustering: House price of unit area via distance to the nearest MRT station") + 
+  theme_minimal()
+```
+
+
+```{r}
+library(plotly)
+
+plot <- augment(df_clust, df) %>%  
+  ggplot(aes(X3, 
+             Y, 
+             color =.cluster)) + 
+  geom_point(alpha = 3) + 
+  ggtitle("Clustering: House price of unit area via distance to the nearest MRT station") 
+
+ggplotly(plot)
+
+```
+
+## Validation
+
+Ước tính chỉ số Silhouette
+S_i có giá trị từ - 1 đến 1 
+
+```{r}
+sil = silhouette(df_clust$cluster, dist(df))
+
+fviz_silhouette(sil)
+```
+
+
+
